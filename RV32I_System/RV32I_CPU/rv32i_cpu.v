@@ -147,6 +147,7 @@ module maindec(input  [6:0] opcode,
       `OP_B: 			controls <= #`simdelay 9'b0000_0010_0; // B-type Branch
       `OP_U_LUI: 		controls <= #`simdelay 9'b0111_0000_0; // LUI
       `OP_J_JAL: 		controls <= #`simdelay 9'b0011_0001_0; // JAL
+      `OP_I_JALR:   controls <= #`simdelay 9'b0011_0000_1; // JALR
       default:    	controls <= #`simdelay 9'b0000_0000_0; // ???
     endcase
   end
@@ -172,6 +173,7 @@ module aludec(input      [6:0] opcode,
 			 10'b0100000_000: alucontrol <= #`simdelay 5'b10000; // subtraction (sub)
 			 10'b0000000_111: alucontrol <= #`simdelay 5'b00001; // and (and)
 			 10'b0000000_110: alucontrol <= #`simdelay 5'b00010; // or (or)
+       10'b0000000_100: alucontrol <= #`simdelay 5'b00011; // xor (xor)
           default:         alucontrol <= #`simdelay 5'bxxxxx; // ???
         endcase
 		end
@@ -182,6 +184,7 @@ module aludec(input      [6:0] opcode,
 			 3'b000:  alucontrol <= #`simdelay 5'b00000; // addition (addi)
 			 3'b110:  alucontrol <= #`simdelay 5'b00010; // or (ori)
 			 3'b111:  alucontrol <= #`simdelay 5'b00001; // and (andi)
+       3'b100: alucontrol <= #`simdelay 5'b00011; // xori
           default: alucontrol <= #`simdelay 5'bxxxxx; // ???
         endcase
 		end
@@ -189,8 +192,15 @@ module aludec(input      [6:0] opcode,
       `OP_I_LOAD: 	// I-type Load (LW, LH, LB...)
       	alucontrol <= #`simdelay 5'b00000;  // addition 
 
-      `OP_B:   		// B-type Branch (BEQ, BNE, ...)
-      	alucontrol <= #`simdelay 5'b10000;  // subtraction 
+      `OP_B:    // B-type Branch (BEQ, BNE, ...)
+    begin
+      case(funct3)
+        // ... (Other funct3 cases for different branches)
+        // 3'b111: alucontrol <= #`simdelay 5'b00110; // bgeu (Assuming alucontrol signal for bgeu is `00110`)
+        // The default case could be for subtraction as most branch comparisons are subtractions
+        default: alucontrol <= #`simdelay 5'b10000; // subtraction (used for BEQ, BNE, etc.)
+      endcase
+    end
 
       `OP_S:   		// S-type Store (SW, SH, SB)
       	alucontrol <= #`simdelay 5'b00000;  // addition 
@@ -240,11 +250,15 @@ module datapath(input         clk, reset,
   wire [31:0] auipc_lui_imm;
   reg  [31:0] alusrc1;
   reg  [31:0] alusrc2;
-  wire [31:0] branch_dest, jal_dest;
+  wire [31:0] branch_dest;
+  wire [31:0] jal_dest;
   wire		  Nflag, Zflag, Cflag, Vflag;
   wire		  f3beq, f3blt;
   wire		  beq_taken;
   wire		  blt_taken;
+  wire      f3bgeu;
+  wire      bgeu_taken;
+
 
   assign rs1 = inst[19:15];
   assign rs2 = inst[24:20];
@@ -256,22 +270,33 @@ module datapath(input         clk, reset,
   //
   assign f3beq  = (funct3 == 3'b000);
   assign f3blt  = (funct3 == 3'b100);
+  assign f3bgeu = (funct3 == 3'b111);
 
   assign beq_taken  =  branch & f3beq & Zflag;
   assign blt_taken  =  branch & f3blt & (Nflag != Vflag);
+  assign bgeu_taken =  branch & f3bgeu & Cflag;
 
   assign branch_dest = (pc + se_br_imm);
   assign jal_dest 	= (pc + se_jal_imm);
+  assign jalr_dest   = {aluout[31:1],1'b0};
+
 
   always @(posedge clk, posedge reset)
   begin
      if (reset)  pc <= 32'b0;
 	  else 
 	  begin
-	      if (beq_taken | blt_taken) // branch_taken
+	      if (beq_taken | blt_taken | bgeu_taken) // branch_taken
 				pc <= #`simdelay branch_dest;
 		   else if (jal) // jal
 				pc <= #`simdelay jal_dest;
+      else if (jalr) // jalr 명령어의 경우
+    begin
+      if (rd == 5'b0 && rs1 == 5'b1) // ret 명령어인 경우 (jalr x0, x1, 0)
+        pc <= #`simdelay (rs1_data); // 링크 레지스터(ra)에서 다음 주소로 점프
+      else // 일반적인 jalr 명령어인 경우
+        pc <= #`simdelay jalr_dest;
+    end
 		   else 
 				pc <= #`simdelay (pc + 4);
 	  end
